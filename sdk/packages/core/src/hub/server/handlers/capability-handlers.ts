@@ -3,6 +3,14 @@ import { createSessionId } from "@cline/shared";
 import { logHubMessage } from "../hub-server-logging";
 import { errorReply, type HubTransportContext, okReply } from "./context";
 
+/**
+ * Shown to the user when a run fails because the client that owned one of its
+ * capabilities (hooks, client tools) went away mid-request. Client ids stay in
+ * the hub log (targetClientId), not in this text.
+ */
+export const CAPABILITY_OWNER_GONE_MESSAGE =
+	"The app running this task disconnected before it could respond. Send a message to continue.";
+
 export async function requestCapability(
 	ctx: HubTransportContext,
 	sessionId: string,
@@ -19,6 +27,21 @@ export async function requestCapability(
 		capabilityName,
 		targetClientId,
 	});
+	// Unregistering cancels the owner's pending requests, but a request raised
+	// after that (a run still in flight when its client restarted) would wait
+	// forever: nobody can answer it and nothing times it out.
+	if (!ctx.clients.has(targetClientId)) {
+		logHubMessage("warn", "capability.request.end", {
+			requestId,
+			sessionId,
+			capabilityName,
+			targetClientId,
+			ok: false,
+			error: "target_client_not_connected",
+			durationMs: 0,
+		});
+		throw new Error(CAPABILITY_OWNER_GONE_MESSAGE);
+	}
 	return await new Promise((resolve, reject) => {
 		ctx.pendingCapabilityRequests.set(requestId, {
 			sessionId,

@@ -16,6 +16,7 @@ import {
 	handleApprovalRespond,
 	requestToolApproval,
 } from "./handlers/approval-handlers";
+import { requestCapability } from "./handlers/capability-handlers";
 import {
 	ensureSessionParticipant,
 	ensureSessionState,
@@ -1039,6 +1040,12 @@ describe("HubServerTransport boundaries", () => {
 		const events: HubEventEnvelope[] = [];
 		transport.subscribe("client-1", (event) => events.push(event));
 
+		await transport.handleCommand({
+			version: "v1",
+			requestId: "req-register",
+			command: "client.register",
+			clientId: "client-1",
+		});
 		const reply = await transport.handleCommand({
 			version: "v1",
 			requestId: "req-create",
@@ -1171,6 +1178,12 @@ describe("HubServerTransport boundaries", () => {
 		const events: HubEventEnvelope[] = [];
 		transport.subscribe("owner-client", (event) => events.push(event));
 
+		await transport.handleCommand({
+			version: "v1",
+			requestId: "req-register",
+			command: "client.register",
+			clientId: "owner-client",
+		});
 		await transport.handleCommand({
 			version: "v1",
 			requestId: "req-create",
@@ -1731,6 +1744,49 @@ describe("HubServerTransport boundaries", () => {
 				expect.objectContaining({ event: "session.updated" }),
 			]),
 		);
+	});
+
+	it("fails capability requests to a client that already unregistered", async () => {
+		const transport = createTransport();
+		const ctx = getContext(transport);
+		const register = (clientId: string) =>
+			transport.handleCommand({
+				version: "v1",
+				requestId: `req-register-${clientId}`,
+				command: "client.register",
+				clientId,
+				payload: { clientId, clientType: "desktop" },
+			});
+		await register("owner-client");
+		await transport.handleCommand({
+			version: "v1",
+			requestId: "req-unregister",
+			command: "client.unregister",
+			clientId: "owner-client",
+		});
+
+		// A run still in flight after its client restarted raises its next hook:
+		// it must fail instead of waiting on a client that can never answer.
+		await expect(
+			requestCapability(
+				ctx,
+				"session-1",
+				"hook.beforeTool",
+				{},
+				"owner-client",
+			),
+		).rejects.toThrow(/disconnected before it could respond/);
+		expect(ctx.pendingCapabilityRequests.size).toBe(0);
+
+		await register("live-client");
+		void requestCapability(
+			ctx,
+			"session-1",
+			"hook.beforeTool",
+			{},
+			"live-client",
+		);
+		expect(ctx.pendingCapabilityRequests.size).toBe(1);
 	});
 
 	it("cancels pending capability requests when a run is aborted", async () => {
