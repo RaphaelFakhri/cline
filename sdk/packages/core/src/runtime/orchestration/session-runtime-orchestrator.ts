@@ -1166,9 +1166,20 @@ export class SessionRuntime {
 				.getValidatedExtensions()
 				.map((extension) => extension.hooks),
 		]);
+		// Mistake-limit decisions run on activeTrackerWork, off the agent loop.
+		// Holding each model/tool boundary on it pauses the run while the
+		// onConsecutiveMistakeLimitReached callback (e.g. a user prompt) decides;
+		// it is already settled in every other turn. Failures are logged by the
+		// end-of-run drain, not raised here.
+		const trackerSettled = () => this.activeTrackerWork.catch(() => undefined);
 		return {
 			...hooks,
+			beforeTool: async (ctx) => {
+				await trackerSettled();
+				return hooks.beforeTool?.(ctx);
+			},
 			afterTool: async (ctx) => {
+				await trackerSettled();
 				const control = await hooks.afterTool?.(ctx);
 				const result = control?.result ?? ctx.result;
 				if (ctx.tool.resultPolicy === "cache-oversized") {
@@ -1187,6 +1198,7 @@ export class SessionRuntime {
 				return control;
 			},
 			beforeModel: async (ctx) => {
+				await trackerSettled();
 				const control = await hooks.beforeModel?.(ctx);
 				if (control?.stop) {
 					return control;
